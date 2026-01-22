@@ -1,0 +1,9 @@
+langchain
+langgraph
+langchain-openai
+pydantic
+httpx
+jinja2
+python-dotenv
+structlog
+resend
