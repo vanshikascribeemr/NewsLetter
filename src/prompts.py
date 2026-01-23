@@ -63,4 +63,4 @@ Return ONLY valid JSON in this exact format:
   "totalTasks": <number>
 }}"""
 
-HUMAN_PROMPT_TEMPLATE = "Category Name: {category_name}\nTotal Tasks: {total_tasks}\nInput Tasks (JSON):\n{tasks_json}"
+HUMAN_PROMPT_TEMPLATE = "Category Name: {category_name}\\nTotal Tasks: {total_tasks}\\nInput Tasks (JSON):\\n{tasks_json}"

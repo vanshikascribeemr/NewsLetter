@@ -1,61 +1,104 @@
 from typing import TypedDict, List, Optional
 from langgraph.graph import StateGraph, END
-from .models import Task, NewsletterContent, WorkflowState
+from .models import Task, NewsletterContent, WorkflowState, CategoryData
 from .api_client import TaskAPIClient
 from .llm import NewsletterGenerator
 from .email_client import EmailClient
 import datetime
 import structlog
+import os
 
 logger = structlog.get_logger()
 
 class NewsletterState(TypedDict):
-    category_id: int
-    category_name: str
-    tasks: List[Task]
+    categories: List[CategoryData]
     newsletter: Optional[NewsletterContent]
     recipient_email: str
     error: Optional[str]
 
 async def fetch_tasks_node(state: NewsletterState):
-    logger.info("Fetching tasks", category_id=state["category_id"])
+    logger.info("Fetching all categories with tasks")
     client = TaskAPIClient()
-    tasks = await client.get_category_tasks(state["category_id"])
+    categories = await client.get_all_categories_with_tasks()
     
-    if not tasks:
-        return {**state, "error": "No tasks found", "tasks": []}
+    if not categories:
+        return {**state, "error": "No categories found", "categories": []}
     
-    return {**state, "tasks": tasks}
+    logger.info("Fetched categories", total_categories=len(categories))
+    return {**state, "categories": categories}
 
 async def enrich_tasks_node(state: NewsletterState):
-    if state.get("error") or not state["tasks"]:
+    if state.get("error") or not state["categories"]:
         return state
         
-    logger.info("Enriching tasks with comments")
+    logger.info("Enriching tasks with comments for all categories")
     client = TaskAPIClient()
-    enriched_tasks = []
+    enriched_categories = []
     
-    for task in state["tasks"]:
-        comments = await client.get_task_followup_history(task.taskId)
-        task.followUpComments = comments
-        enriched_tasks.append(task)
-    
-    # Sort by priority: High -> Medium -> Low
+    # Priority map for sorting
     priority_map = {"High": 0, "Medium": 1, "Low": 2}
-    enriched_tasks.sort(key=lambda x: priority_map.get(x.taskPriority, 3))
     
-    return {**state, "tasks": enriched_tasks}
+    for category in state["categories"]:
+        enriched_tasks = []
+        
+        logger.info("Enriching category", category_id=category.categoryId, category_name=category.categoryName)
+        
+        for task in category.tasks:
+            comments = await client.get_task_followup_history(task.taskId)
+            task.followUpComments = comments
+            enriched_tasks.append(task)
+        
+        # Sort tasks by priority: High -> Medium -> Low
+        enriched_tasks.sort(key=lambda x: priority_map.get(x.taskPriority, 3))
+        
+        # Update category with enriched tasks
+        category.tasks = enriched_tasks
+        enriched_categories.append(category)
+    
+    return {**state, "categories": enriched_categories}
 
 async def generate_newsletter_node(state: NewsletterState):
-    if state.get("error") or not state["tasks"]:
+    if state.get("error") or not state["categories"]:
         return state
         
-    logger.info("Generating newsletter with LLM")
+    logger.info("Generating newsletter with LLM for all categories")
     generator = NewsletterGenerator()
+    
     try:
-        newsletter = await generator.generate(state["category_name"], state["tasks"])
+        category_summaries = []
+        total_tasks_count = 0
+        
+        # Generate summary for each category
+        for category in state["categories"]:
+            # Skip categories with no tasks
+            if not category.tasks:
+                logger.info("Skipping empty category", category_name=category.categoryName)
+                continue
+            
+            logger.info("Generating summary for category", category_name=category.categoryName, task_count=len(category.tasks))
+            
+            # Generate newsletter for this category
+            category_newsletter = await generator.generate(category.categoryName, category.tasks)
+            category_summaries.append(category_newsletter.content)
+            total_tasks_count += category_newsletter.totalTasks
+        
+        # Consolidate all category summaries with separator lines
+        if not category_summaries:
+            consolidated_content = "No task activity occurred this week across all categories."
+        else:
+            # Join with separator lines
+            consolidated_content = "\n\n---\n\n".join(category_summaries)
+        
+        newsletter = NewsletterContent(
+            content=consolidated_content,
+            totalTasks=total_tasks_count
+        )
+        
+        logger.info("Newsletter generated successfully", total_categories=len(category_summaries), total_tasks=total_tasks_count)
         return {**state, "newsletter": newsletter}
+        
     except Exception as e:
+        logger.error("LLM Generation failed", error=str(e))
         return {**state, "error": f"LLM Generation failed: {e}"}
 
 async def send_email_node(state: NewsletterState):
