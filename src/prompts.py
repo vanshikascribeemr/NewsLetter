@@ -34,7 +34,7 @@ TONE & STYLE GUIDE:
 
 RULES:
 - INCLUDE ALL tasks.
-- Fetch summaries ONLY from last 7 days follow-up comments.
+- Fetch summaries from the provided recent follow-up comments.
 - If followUpComments are empty, still include the task.
 - One short paragraph per task.
 - When mentioning a task, ALWAYS format the ID exactly like this: "task(1234)". 

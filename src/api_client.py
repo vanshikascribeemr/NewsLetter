@@ -9,7 +9,7 @@ logger = structlog.get_logger()
 
 class TaskAPIClient:
     def __init__(self, base_url: str = None, api_key: str = None):
-        self.base_url = base_url or os.getenv("API_BASE_URL", "https://hrms-test.scribeemr.in/api/HrmsWebApi")
+        self.base_url = base_url or os.getenv("API_BASE_URL", "https://hrms.scribeemr.com/api/HrmsWebApi")
         self.api_key = api_key or os.getenv("API_KEY")
 
     async def get_category_tasks(self, category_id: int) -> List[Task]:
@@ -27,31 +27,54 @@ class TaskAPIClient:
 
         async with httpx.AsyncClient() as client:
             try:
-                # Based on: curl --location '.../GetCategoryTasks?CategoryId=7'
-                response = await client.get(
-                    f"{self.base_url}/GetCategoryTasks",
-                    params={"CategoryId": category_id},
-                    headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
-                    timeout=30.0
-                )
-                response.raise_for_status()
-                data = response.json()
-                # Handle potential different response structures
-                # API returns {"Status": true, "Data": [...]} format
-                if isinstance(data, list):
-                    tasks_list = data
-                elif isinstance(data, dict):
-                    tasks_list = data.get("Data", data.get("tasks", []))
-                else:
-                    tasks_list = []
+                tasks_list = []
+                # Attempt standard fetch
+                try:
+                    response = await client.get(
+                        f"{self.base_url}/GetCategoryTasks",
+                        params={"CategoryId": category_id},
+                        headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
+                        timeout=300.0
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        if isinstance(data, list):
+                            tasks_list = data
+                        elif isinstance(data, dict):
+                            tasks_list = data.get("Data") or data.get("tasks") or data.get("tasksList") or []
+                            if not isinstance(tasks_list, list): tasks_list = []
+                except Exception as e:
+                    logger.warning("GetCategoryTasks failed", error=str(e), category_id=category_id)
+
+                # Fallback: If empty and looks like a department ID
+                if not tasks_list and category_id > 1000:
+                     try:
+                        resp_dept = await client.get(
+                            f"{self.base_url}/GetDepartmentTasks",
+                            params={"DepartmentId": category_id},
+                             headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
+                             timeout=60.0
+                        )
+                        if resp_dept.status_code == 200:
+                             d_data = resp_dept.json()
+                             dept_tasks = []
+                             if isinstance(d_data, list): dept_tasks = d_data
+                             elif isinstance(d_data, dict): dept_tasks = d_data.get("Data", [])
+                             
+                             if dept_tasks:
+                                 logger.info("Fallback: Fetched tasks as Department", category_id=category_id, count=len(dept_tasks))
+                                 tasks_list = dept_tasks
+                     except Exception as ex: 
+                         logger.warning("Dept fallback failed", error=str(ex), category_id=category_id)
+
                 return [Task(**t) for t in tasks_list]
             except Exception as e:
-                logger.error("Failed to fetch tasks", error=str(e), category_id=category_id)
+                logger.error("Critical error in get_category_tasks", error=str(e), category_id=category_id)
                 return []
 
     async def get_task_followup_history(self, task_id: int) -> List[str]:
         """
-        Fetches last 7 days follow-up comments using POST request with JSON body.
+        Fetches last activity comments from the last 7 days using the specific endpoint.
         """
         # TEST MODE: Return mock comments
         if os.getenv("TEST_MODE") == "true":
@@ -59,52 +82,133 @@ class TaskAPIClient:
 
         async with httpx.AsyncClient() as client:
             try:
-                # Based on: curl ... --data '{ "TaskId" : 131 }'
+                # User suggested reliable method: PageSize=-1 fetches all history.
+                # We then filter client-side for the last 7 days.
                 response = await client.post(
-                    f"{self.base_url}/GetTaskFollowUpHistoryLast7Days",
-                    json={"TaskId": task_id},
+                    f"{self.base_url}/GetTaskFollowUpHistory",
+                    json={"TaskId": task_id, "PageSize": -1},
                     headers={
                         "Content-Type": "application/json",
                         **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})
                     },
-                    timeout=30.0
+                    timeout=60.0 # Increased timeout for potential large history
                 )
                 response.raise_for_status()
-                response.raise_for_status()
                 data = response.json()
+
+                # Extract inner list
+                history = self._extract_history(data)
                 
-                # Extract inner list from Data.FollowUpHistoryDetails
-                history = []
-                if isinstance(data, dict):
-                    inner_data = data.get("Data", {})
-                    # Handle case where Data might be the list itself or inside
-                    if isinstance(inner_data, dict):
-                        history = inner_data.get("FollowUpHistoryDetails", [])
-                    elif isinstance(inner_data, list):
-                        history = inner_data
-                    # Fallback to direct list if valid
-                    elif isinstance(data, list):
-                        history = data
-                elif isinstance(data, list):
-                    history = data
-                    
-                # Extract string comment from history items
+                # Client-side 7-day filter
                 comments = []
+                now = datetime.datetime.now()
+                threshold = now - datetime.timedelta(days=7)
+                
                 for item in history:
-                    if isinstance(item, str):
-                        comments.append(item)
-                    elif isinstance(item, dict):
-                        # Try common field names
-                        text = item.get("FollowUpComment") or item.get("Comment") or item.get("Description") or item.get("Note")
-                        if text:
-                            comments.append(str(text))
+                    f_date_str = item.get("FollowUpDate")
+                    if not f_date_str:
+                        continue
+                        
+                    is_recent = False
+                    try:
+                        # Robust date parsing
+                        date_str = f_date_str.replace("Z", "")
+                        if "." in date_str:
+                            main_part, frac_part = date_str.split(".", 1)
+                            if len(frac_part) > 6:
+                                frac_part = frac_part[:6]
+                            date_str = f"{main_part}.{frac_part}"
                         else:
-                            # Fallback: join all values
-                            comments.append(" | ".join(str(v) for v in item.values() if v))
+                            # If no fraction, it might just be seconds
+                            pass
+                        
+                        f_date = datetime.datetime.fromisoformat(date_str)
+                        if f_date >= threshold:
+                            is_recent = True
+                    except Exception:
+                        # If parsing fails, we assume it's not recent/valid to be safe
+                        pass
+                    
+                    if is_recent:
+                        text = item.get("TaskFollowUpComments") or item.get("FollowUpComment") or item.get("Comment") or item.get("Description") or item.get("Note")
+                        if text and str(text).strip():
+                            comments.append(str(text).strip())
+
                 return comments
             except Exception as e:
-                logger.error("Failed to fetch comments", task_id=task_id, error=str(e))
-                return []
+                # If PageSize=-1 fails (e.g. 500 Error for large/broken history),
+                # fallback to small page size (5) to at least get the most recent comments.
+                logger.warning("Large fetch failed, trying fallback", task_id=task_id, error=str(e))
+                try:
+                    response = await client.post(
+                        f"{self.base_url}/GetTaskFollowUpHistory",
+                        json={"TaskId": task_id, "PageSize": 5},
+                        headers={
+                            "Content-Type": "application/json",
+                            **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})
+                        },
+                        timeout=30.0
+                    )
+                    response.raise_for_status()
+                    data = response.json()
+                    history = self._extract_history(data)
+                except Exception as ex2:
+                    logger.error("Fallback fetch also failed", task_id=task_id, error=str(ex2))
+                    return []
+
+            # Client-side 7-day filter (applied to whatever history we got)
+            comments = []
+            now = datetime.datetime.now()
+            threshold = now - datetime.timedelta(days=7)
+
+    def _extract_history(self, data) -> List[dict]:
+        history = []
+        if isinstance(data, dict):
+            inner_data = data.get("Data", {})
+            if isinstance(inner_data, dict):
+                history = inner_data.get("FollowUpHistoryDetails", [])
+            elif isinstance(inner_data, list):
+                history = inner_data
+            else:
+                history = data.get("FollowUpHistoryDetails", [])
+        return history if isinstance(history, list) else []
+
+    async def _fallback_fetch_history(self, client, task_id) -> List[dict]:
+        try:
+            # Fetch with legacy endpoint
+            response = await client.post(
+                f"{self.base_url}/GetTaskFollowUpHistory",
+                json={"TaskId": task_id, "Page": 1, "PageSize": 20},
+                 headers={
+                    "Content-Type": "application/json",
+                    **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})
+                },
+                timeout=30.0
+            )
+            data = response.json()
+            all_history = self._extract_history(data)
+            
+            # Client-side 7-day filter
+            filtered_history = []
+            now = datetime.datetime.now()
+            threshold = now - datetime.timedelta(days=7)
+            
+            for item in all_history:
+                f_date_str = item.get("FollowUpDate")
+                if f_date_str:
+                    try:
+                        date_str = f_date_str.replace("Z", "")
+                        if "." in date_str:
+                             date_str = date_str.split(".")[0]
+                        f_date = datetime.datetime.fromisoformat(date_str)
+                        if f_date >= threshold:
+                            filtered_history.append(item)
+                    except:
+                        pass
+            return filtered_history
+        except Exception as ex:
+            logger.error("Legacy fallback also failed", task_id=task_id, error=str(ex))
+            return []
 
     async def get_all_categories(self) -> List[dict]:
         """
@@ -124,7 +228,7 @@ class TaskAPIClient:
                 response = await client.get(
                     f"{self.base_url}/GetAllCategories",
                     headers={"Authorization": f"Bearer {self.api_key}"} if self.api_key else {},
-                    timeout=30.0
+                    timeout=300.0
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -148,6 +252,20 @@ class TaskAPIClient:
         
         # Step 1: Get all categories
         categories = await self.get_all_categories()
+        
+        # USER_FEEDBACK: "ScribeRyte-related tasks" is a different category
+        # It seems the API might not be returning it in GetAllCategories, or it's a Department-based view
+        # We manually inject it to ensure it's checked. We use a distinct ID range or the discovered Dept ID (1022)
+        scriberyte_exists = any(
+            str(c.get("TaskCategoryName", "")).strip().lower() == "scriberyte-related tasks" 
+            for c in categories
+        )
+        if not scriberyte_exists:
+            logger.info("Injecting missing 'ScribeRyte-related tasks' category")
+            categories.append({
+                "TaskCategoryId": 1022, # Using Dept ID as likely mapped Category ID
+                "TaskCategoryName": "ScribeRyte-related tasks"
+            })
         
         if not categories:
             logger.warning("No categories found")

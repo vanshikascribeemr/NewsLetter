@@ -7,6 +7,7 @@ from .email_client import EmailClient
 import datetime
 import structlog
 import os
+import asyncio
 
 logger = structlog.get_logger()
 
@@ -33,26 +34,33 @@ async def enrich_tasks_node(state: NewsletterState):
         
     logger.info("Enriching tasks with comments for all categories")
     client = TaskAPIClient()
+    llm_gen = NewsletterGenerator()
     enriched_categories = []
     
     # Priority map for sorting
     priority_map = {"High": 0, "Medium": 1, "Low": 2}
     
     for category in state["categories"]:
-        enriched_tasks = []
-        
         logger.info("Enriching category", category_id=category.categoryId, category_name=category.categoryName)
         
-        for task in category.tasks:
-            comments = await client.get_task_followup_history(task.taskId)
-            task.followUpComments = comments
-            enriched_tasks.append(task)
+        async def enrich_task(t):
+            try:
+                comments = await client.get_task_followup_history(t.taskId)
+                t.followUpComments = comments
+                t.summarizedComments = await llm_gen.summarize_comments(comments)
+            except Exception as e:
+                logger.error("Error enriching task", task_id=t.taskId, error=str(e))
+                t.summarizedComments = "Update retrieval error."
+            return t
+
+        # Process tasks in parallel for this category
+        enriched_tasks = await asyncio.gather(*[enrich_task(task) for task in category.tasks])
         
         # Sort tasks by priority: High -> Medium -> Low
         enriched_tasks.sort(key=lambda x: priority_map.get(x.taskPriority, 3))
         
         # Update category with enriched tasks
-        category.tasks = enriched_tasks
+        category.tasks = list(enriched_tasks)
         enriched_categories.append(category)
     
     return {**state, "categories": enriched_categories}
@@ -61,45 +69,43 @@ async def generate_newsletter_node(state: NewsletterState):
     if state.get("error") or not state["categories"]:
         return state
         
-    logger.info("Generating newsletter with LLM for all categories")
-    generator = NewsletterGenerator()
+    logger.info("Generating Phase 3 Anchor-Based Newsletter")
     
     try:
-        category_summaries = []
-        total_tasks_count = 0
+        from .html_generator import HTMLGenerator
+        html_gen = HTMLGenerator()
         
-        # Generate summary for each category
-        for category in state["categories"]:
-            # Skip categories with no tasks
-            if not category.tasks:
-                logger.info("Skipping empty category", category_name=category.categoryName)
-                continue
-            
-            logger.info("Generating summary for category", category_name=category.categoryName, task_count=len(category.tasks))
-            
-            # Generate newsletter for this category
-            category_newsletter = await generator.generate(category.categoryName, category.tasks)
-            category_summaries.append(category_newsletter.content)
-            total_tasks_count += category_newsletter.totalTasks
+        # Generates the single HTML string with anchors/tables
+        full_html = html_gen.generate(state["categories"])
         
-        # Consolidate all category summaries with separator lines
-        if not category_summaries:
-            consolidated_content = "No task activity occurred this week across all categories."
-        else:
-            # Join with separator lines
-            consolidated_content = "\n\n---\n\n".join(category_summaries)
+        # 2. ALSO GENERATE DYNAMIC DASHBOARD (index.html)
+        try:
+            from .dashboard_generator import DashboardGenerator
+            dash_gen = DashboardGenerator()
+            dashboard_html = dash_gen.generate(state["categories"])
+            
+            # Save to root directory
+            with open("index.html", "w", encoding="utf-8") as f:
+                f.write(dashboard_html)
+            logger.info("Dynamic Dashboard (index.html) updated.")
+        except Exception as dash_err:
+            logger.error("Dashboard generation failed", error=str(dash_err))
+            # Don't fail the whole workflow if only dashboard fails
+            
+        # Calculate stats for logging
+        total_tasks = sum(len(c.tasks) for c in state["categories"])
         
         newsletter = NewsletterContent(
-            content=consolidated_content,
-            totalTasks=total_tasks_count
+            content=full_html,
+            totalTasks=total_tasks
         )
         
-        logger.info("Newsletter generated successfully", total_categories=len(category_summaries), total_tasks=total_tasks_count)
+        logger.info("Newsletter HTML generated successfully", size_bytes=len(full_html))
         return {**state, "newsletter": newsletter}
         
     except Exception as e:
-        logger.error("LLM Generation failed", error=str(e))
-        return {**state, "error": f"LLM Generation failed: {e}"}
+        logger.error("HTML Generation failed", error=str(e))
+        return {**state, "error": f"HTML Generation failed: {e}"}
 
 async def send_email_node(state: NewsletterState):
     if state.get("error") or not state.get("newsletter"):
@@ -109,7 +115,7 @@ async def send_email_node(state: NewsletterState):
     logger.info("Sending email")
     client = EmailClient()
     date_str = datetime.datetime.now().strftime("%Y-%m-%d")
-    subject = f"📰 Weekly Task Newsletter – {date_str}"
+    subject = f"📰 Weekly Bulletin – {date_str}"
     
     success = client.send_newsletter(
         recipients=state["recipient_email"],

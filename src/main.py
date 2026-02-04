@@ -33,7 +33,8 @@ async def main():
         if final_state.get("newsletter"):
             print("\nGenerated Newsletter Preview:")
             print("="*30)
-            print(final_state["newsletter"].content)
+            content = final_state["newsletter"].content
+            print(f"HTML Content generated ({len(content)} bytes).")
             print("="*30)
 
 if __name__ == "__main__":

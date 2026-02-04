@@ -29,11 +29,18 @@ class EmailClient:
                 server.login(self.smtp_user, self.smtp_pass)
                 
                 for email in recipient_list:
-                    msg = MIMEMultipart()
+                    msg = MIMEMultipart('alternative')
                     msg['From'] = self.sender_email
                     msg['To'] = email
                     msg['Subject'] = subject
-                    msg.attach(MIMEText(content, 'plain'))
+                    
+                    # Fallback text
+                    text_content = "This email utilizes HTML features. Please view it in a client that supports HTML."
+                    part1 = MIMEText(text_content, 'plain')
+                    part2 = MIMEText(content, 'html')
+                    
+                    msg.attach(part1)
+                    msg.attach(part2)
                     
                     server.send_message(msg)
                     logger.info("Email sent successfully", recipient=email)

@@ -49,3 +49,43 @@ class NewsletterGenerator:
         except Exception as e:
             # Fallback or error handling
             raise ValueError(f"Failed to parse LLM response: {e}\nContent was: {response.content}")
+
+    async def summarize_comments(self, comments: List[str]) -> str:
+        """
+        Summarizes a list of comments into a single narrative paragraph.
+        """
+        if not comments:
+            return "No changes reported over the last 7 days."
+            
+        if not os.getenv("OPENAI_API_KEY"):
+            return f"[MOCK SUMMARY] Summarized {len(comments)} comments: " + " | ".join(comments[:2]) + "..."
+
+        prompt_cards = []
+        for i, c in enumerate(comments):
+            prompt_cards.append(f"Comment {i+1}: {c}")
+            
+        comments_text = "\n".join(prompt_cards)
+        
+        # Prompt for detailed, narrative summary (strictly 2-3 lines)
+        system_prompt = (
+            "You are a senior project manager writing weekly status updates for executive stakeholders. "
+            "Summarize the provided task comments into a concise narrative paragraph of EXACTLY 2 to 3 lines. "
+            "Focus on: what was done, key blockers, and next steps. "
+            "Use a professional, executive tone. "
+            "Do NOT exceed 3 lines under any circumstances. "
+            "IMPORTANT: If comments are provided (even if brief like 'Task Created'), you MUST summarize them. "
+            "Do NOT return 'No changes reported' if there is input data. "
+            "If the comment is just 'Task Created', state that the task was initiated and is pending review."
+        )
+        human_prompt = f"Recent Activity Comments:\n{comments_text}\n\nWrite a 2-3 line summary:"
+        
+        chain = ChatPromptTemplate.from_messages([
+            ("system", system_prompt),
+            ("human", human_prompt)
+        ]) | self.llm
+        
+        try:
+            response = await chain.ainvoke({})
+            return response.content.strip()
+        except Exception as e:
+            return f"Failed to generate summary: {str(e)}"
