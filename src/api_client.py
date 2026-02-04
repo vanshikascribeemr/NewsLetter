@@ -74,92 +74,83 @@ class TaskAPIClient:
 
     async def get_task_followup_history(self, task_id: int) -> List[str]:
         """
-        Fetches last activity comments from the last 7 days using the specific endpoint.
+        Fetches last activity comments from the last 7 days.
+        Returns them in CHRONOLOGICAL order (oldest first) to structure the summary as a timeline.
         """
-        # TEST MODE: Return mock comments
         if os.getenv("TEST_MODE") == "true":
-            return [f"Update for task {task_id}: Work in progress", "Added unit tests"]
+            # Mock timeline: Action A -> Action B -> Action C
+            return [
+                f"[2026-01-22 09:00]: Task {task_id} was initiated.",
+                f"[2026-01-24 14:00]: Development in progress, unit tests added.",
+                f"[2026-01-26 11:00]: Finalizing documentation and preparing for review."
+            ]
 
         async with httpx.AsyncClient() as client:
+            history = []
             try:
-                # User suggested reliable method: PageSize=-1 fetches all history.
-                # We then filter client-side for the last 7 days.
+                # Primary method: Fetch all history (PageSize=-1)
                 response = await client.post(
                     f"{self.base_url}/GetTaskFollowUpHistory",
                     json={"TaskId": task_id, "PageSize": -1},
-                    headers={
-                        "Content-Type": "application/json",
-                        **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})
-                    },
-                    timeout=60.0 # Increased timeout for potential large history
+                    headers={"Content-Type": "application/json", **self._get_auth_header()},
+                    timeout=60.0
                 )
                 response.raise_for_status()
-                data = response.json()
-
-                # Extract inner list
-                history = self._extract_history(data)
-                
-                # Client-side 7-day filter
-                comments = []
-                now = datetime.datetime.now()
-                threshold = now - datetime.timedelta(days=7)
-                
-                for item in history:
-                    f_date_str = item.get("FollowUpDate")
-                    if not f_date_str:
-                        continue
-                        
-                    is_recent = False
-                    try:
-                        # Robust date parsing
-                        date_str = f_date_str.replace("Z", "")
-                        if "." in date_str:
-                            main_part, frac_part = date_str.split(".", 1)
-                            if len(frac_part) > 6:
-                                frac_part = frac_part[:6]
-                            date_str = f"{main_part}.{frac_part}"
-                        else:
-                            # If no fraction, it might just be seconds
-                            pass
-                        
-                        f_date = datetime.datetime.fromisoformat(date_str)
-                        if f_date >= threshold:
-                            is_recent = True
-                    except Exception:
-                        # If parsing fails, we assume it's not recent/valid to be safe
-                        pass
-                    
-                    if is_recent:
-                        text = item.get("TaskFollowUpComments") or item.get("FollowUpComment") or item.get("Comment") or item.get("Description") or item.get("Note")
-                        if text and str(text).strip():
-                            comments.append(str(text).strip())
-
-                return comments
+                history = self._extract_history(response.json())
             except Exception as e:
-                # If PageSize=-1 fails (e.g. 500 Error for large/broken history),
-                # fallback to small page size (5) to at least get the most recent comments.
-                logger.warning("Large fetch failed, trying fallback", task_id=task_id, error=str(e))
+                logger.warning("Large fetch failed, trying small page fallback", task_id=task_id, error=str(e))
                 try:
                     response = await client.post(
                         f"{self.base_url}/GetTaskFollowUpHistory",
-                        json={"TaskId": task_id, "PageSize": 5},
-                        headers={
-                            "Content-Type": "application/json",
-                            **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})
-                        },
+                        json={"TaskId": task_id, "PageSize": 20},
+                        headers={"Content-Type": "application/json", **self._get_auth_header()},
                         timeout=30.0
                     )
-                    response.raise_for_status()
-                    data = response.json()
-                    history = self._extract_history(data)
+                    history = self._extract_history(response.json())
                 except Exception as ex2:
-                    logger.error("Fallback fetch also failed", task_id=task_id, error=str(ex2))
+                    logger.error("History fallback fetch also failed", task_id=task_id, error=str(ex2))
                     return []
 
-            # Client-side 7-day filter (applied to whatever history we got)
-            comments = []
-            now = datetime.datetime.now()
-            threshold = now - datetime.timedelta(days=7)
+            return self._filter_and_sort_comments(history)
+
+    def _get_auth_header(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+
+    def _filter_and_sort_comments(self, history: List[dict]) -> List[str]:
+        """
+        Filters history for the last 7 days, sorts chronologically, and adds date prefixes.
+        """
+        items_with_dates = []
+        now = datetime.datetime.now()
+        threshold = now - datetime.timedelta(days=7)
+
+        for item in history:
+            f_date_str = item.get("FollowUpDate")
+            if not f_date_str: continue
+
+            try:
+                # Normalize date string for isoformat
+                date_str = f_date_str.replace("Z", "")
+                if "." in date_str:
+                    main, frac = date_str.split(".", 1)
+                    date_str = f"{main}.{frac[:6]}"
+                
+                f_date = datetime.datetime.fromisoformat(date_str)
+                
+                if f_date >= threshold:
+                    text = item.get("TaskFollowUpComments") or item.get("FollowUpComment") or \
+                           item.get("Comment") or item.get("Description") or item.get("Note")
+                    
+                    if text and str(text).strip():
+                        # We store f_date for sorting, and formatted string for the LLM
+                        formatted = f"[{f_date.strftime('%Y-%m-%d %H:%M')}]: {str(text).strip()}"
+                        items_with_dates.append((f_date, formatted))
+            except Exception:
+                continue
+
+        # Sort by date: Oldest -> Newest (Timeline structure)
+        items_with_dates.sort(key=lambda x: x[0])
+        return [txt for date, txt in items_with_dates]
 
     def _extract_history(self, data) -> List[dict]:
         history = []
@@ -173,42 +164,6 @@ class TaskAPIClient:
                 history = data.get("FollowUpHistoryDetails", [])
         return history if isinstance(history, list) else []
 
-    async def _fallback_fetch_history(self, client, task_id) -> List[dict]:
-        try:
-            # Fetch with legacy endpoint
-            response = await client.post(
-                f"{self.base_url}/GetTaskFollowUpHistory",
-                json={"TaskId": task_id, "Page": 1, "PageSize": 20},
-                 headers={
-                    "Content-Type": "application/json",
-                    **({"Authorization": f"Bearer {self.api_key}"} if self.api_key else {})
-                },
-                timeout=30.0
-            )
-            data = response.json()
-            all_history = self._extract_history(data)
-            
-            # Client-side 7-day filter
-            filtered_history = []
-            now = datetime.datetime.now()
-            threshold = now - datetime.timedelta(days=7)
-            
-            for item in all_history:
-                f_date_str = item.get("FollowUpDate")
-                if f_date_str:
-                    try:
-                        date_str = f_date_str.replace("Z", "")
-                        if "." in date_str:
-                             date_str = date_str.split(".")[0]
-                        f_date = datetime.datetime.fromisoformat(date_str)
-                        if f_date >= threshold:
-                            filtered_history.append(item)
-                    except:
-                        pass
-            return filtered_history
-        except Exception as ex:
-            logger.error("Legacy fallback also failed", task_id=task_id, error=str(ex))
-            return []
 
     async def get_all_categories(self) -> List[dict]:
         """

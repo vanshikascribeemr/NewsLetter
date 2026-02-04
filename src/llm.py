@@ -62,7 +62,7 @@ class NewsletterGenerator:
 
         prompt_cards = []
         for i, c in enumerate(comments):
-            prompt_cards.append(f"Comment {i+1}: {c}")
+            prompt_cards.append(f"Step {i+1}: {c}")
             
         comments_text = "\n".join(prompt_cards)
         
@@ -73,11 +73,13 @@ class NewsletterGenerator:
             "Focus on: what was done, key blockers, and next steps. "
             "Use a professional, executive tone. "
             "Do NOT exceed 3 lines under any circumstances. "
+            "The summary MUST follow a chronological timeline, clearly explaining the progression of the task over the last 7 days. "
+            "Structure it like a story: start with the initial actions, move through intermediate steps, and end with the latest status and next steps. "
             "IMPORTANT: If comments are provided (even if brief like 'Task Created'), you MUST summarize them. "
             "Do NOT return 'No changes reported' if there is input data. "
             "If the comment is just 'Task Created', state that the task was initiated and is pending review."
         )
-        human_prompt = f"Recent Activity Comments:\n{comments_text}\n\nWrite a 2-3 line summary:"
+        human_prompt = f"Recent Activity Timeline:\n{comments_text}\n\nWrite a 2-3 line narrative story of this week's progression:"
         
         chain = ChatPromptTemplate.from_messages([
             ("system", system_prompt),

@@ -26,6 +26,7 @@ class HTMLGenerator:
         date_str = datetime.datetime.now().strftime("%B %d, %Y")
         total_tasks = sum(len(c.tasks) for c in categories)
         total_cats = sum(1 for c in categories if c.tasks)
+        empty_cats = len(categories) - total_cats
         
         # Build Category Navigation Chips
         chips_html = ""
@@ -52,6 +53,12 @@ class HTMLGenerator:
         email += self._render_header(date_str)
         
         # Summary Section (Formatted separately to avoid overall format conflicts)
+        summary_text = (
+            f"This week in ScribeEMR: <strong>{total_tasks} active tasks</strong> unfolding across "
+            f"<strong>{total_cats} categories</strong> — while <strong>{empty_cats} categories</strong> "
+            "stand still, reporting zero active tasks."
+        )
+
         summary_block = f"""
         <tr>
             <td align="center" style="padding: 0 20px;">
@@ -61,7 +68,7 @@ class HTMLGenerator:
                         <td align="left" style="background-color:#ffffff; padding:30px; border-radius:8px; box-shadow: 0 2px 4px rgba(0,0,0,0.05);">
                             <h2 style="margin:0 0 15px 0; font-family:{self.FONT_SANS}; font-size:20px; color:#1f2937;">Executive Summary</h2>
                             <p style="margin:0 0 20px 0; font-family:{self.FONT_SANS}; font-size:15px; color:#4b5563; line-height:1.5;">
-                                Here is the weekly engineering update. Tracking <strong>{total_tasks} active tasks</strong> across <strong>{total_cats} categories</strong>.
+                                {summary_text}
                             </p>
                             <div>{chips_html}</div>
                         </td>

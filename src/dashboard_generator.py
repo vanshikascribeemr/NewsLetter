@@ -159,10 +159,14 @@ class DashboardGenerator:
             </span>
             '''
 
+        empty_categories = total_categories - sum(1 for c in categories if c.tasks)
         return f'''
         <div id="dashboard" class="page-section">
             <div class="section-title">Weekly Engineering Overview</div>
-            <div class="section-subtitle">Real-time status of {total_tasks} tasks across {total_categories} departments.</div>
+            <div class="section-subtitle">
+                This week: <strong>{total_tasks} active tasks</strong> across <strong>{total_categories - empty_categories} categories</strong> — 
+                while <strong>{empty_categories} categories</strong> stand still with zero active tasks.
+            </div>
             
             <div style="margin-bottom:40px; background:#fff; padding:24px; border-radius:12px; border:1px solid var(--border);">
                 <div style="font-size:12px; font-weight:800; color:var(--text-muted); text-transform:uppercase; margin-bottom:16px; letter-spacing:1px;">Quick Navigation</div>
