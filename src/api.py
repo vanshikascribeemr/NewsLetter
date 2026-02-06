@@ -51,52 +51,53 @@ async def prewarm_cache():
                 if not categories:
                     categories = await client.get_all_categories_with_tasks()
                 
-                # Deep copy to avoid modifying cached data
-                import copy
-                enriched_categories = copy.deepcopy(categories)
+                # Use a semaphore to limit concurrency and save memory on Render Free Tiere
+                # Processing 3 categories at a time instead of 32+ simultaneously
+                sem = asyncio.Semaphore(3)
                 
                 async def enrich_category(category):
-                    # Filter out "Done" tasks
-                    category.tasks = [t for t in category.tasks if (t.taskStatus or "").lower() != "done"]
-                    
-                    if not category.tasks:
-                        category.categorySummary = "No active work items recorded in this workstream for the current period."
-                        return category
-                    
-                    logger.info("Enriching category", category_id=category.categoryId, category_name=category.categoryName)
-                    
-                    async def enrich_task(t):
+                    async with sem:
+                        # Filter out "Done" tasks
+                        category.tasks = [t for t in category.tasks if (t.taskStatus or "").lower() != "done"]
+                        
+                        if not category.tasks:
+                            category.categorySummary = "No active work items recorded in this workstream for the current period."
+                            return category
+                        
+                        logger.info("Enriching category", category_id=category.categoryId, category_name=category.categoryName)
+                        
+                        async def enrich_task(t):
+                            try:
+                                comments = await client.get_task_followup_history(t.taskId)
+                                t.followUpComments = comments
+                                if comments:
+                                    t.summarizedComments = await llm_gen.summarize_comments(comments)
+                                else:
+                                    t.summarizedComments = "No recent activity recorded in the last 7 days."
+                            except Exception as e:
+                                logger.error("Error enriching task", task_id=t.taskId, error=str(e))
+                                t.summarizedComments = "Update retrieval error."
+                            return t
+                        
+                        # Process tasks in parallel for this single category
+                        enriched_tasks = await asyncio.gather(*[enrich_task(task) for task in category.tasks])
+                        category.tasks = list(enriched_tasks)
+                        
+                        # Generate category-level synthesis
                         try:
-                            comments = await client.get_task_followup_history(t.taskId)
-                            t.followUpComments = comments
-                            if comments:
-                                t.summarizedComments = await llm_gen.summarize_comments(comments)
-                            else:
-                                t.summarizedComments = "No recent activity recorded in the last 7 days."
+                            category.categorySummary = await llm_gen.generate_category_summary(category.categoryName, category.tasks)
                         except Exception as e:
-                            logger.error("Error enriching task", task_id=t.taskId, error=str(e))
-                            t.summarizedComments = "Update retrieval error."
-                        return t
-                    
-                    # Process tasks in parallel for this category
-                    enriched_tasks = await asyncio.gather(*[enrich_task(task) for task in category.tasks])
-                    category.tasks = list(enriched_tasks)
-                    
-                    # Generate category-level synthesis
-                    try:
-                        category.categorySummary = await llm_gen.generate_category_summary(category.categoryName, category.tasks)
-                    except Exception as e:
-                        logger.error("Failed to generate category summary", category=category.categoryName, error=str(e))
-                        category.categorySummary = "Summary generation failed."
-                    
-                    return category
+                            logger.error("Failed to generate category summary", category=category.categoryName, error=str(e))
+                            category.categorySummary = "Summary generation failed."
+                        
+                        return category
 
-                # Process ALL categories in parallel
-                enriched_categories = await asyncio.gather(*[enrich_category(cat) for cat in enriched_categories])
+                # Process categories with controlled concurrency
+                enriched_results = await asyncio.gather(*[enrich_category(cat) for cat in categories])
                 
                 # Store enriched data
-                set_enriched_categories(list(enriched_categories))
-                logger.info("Enriched cache pre-warmed successfully", count=len(enriched_categories))
+                set_enriched_categories(list(enriched_results))
+                logger.info("Enriched cache pre-warmed successfully", count=len(enriched_results))
             
     except Exception as e:
         logger.error("Failed to pre-warm cache", error=str(e))
