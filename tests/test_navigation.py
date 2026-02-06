@@ -54,9 +54,9 @@ def test_dynamic_navigation_anchors():
         escaped_name = html.escape(cat.categoryName)
         assert escaped_name in html_content
 
-def test_empty_categories_no_anchors():
+def test_empty_categories_are_present():
     """
-    Verify that categories with no tasks don't generate anchors/sections.
+    STRICT CHECK: Verify that categories with no tasks ARE generated in anchors/sections.
     """
     categories = [
         CategoryData(
@@ -68,5 +68,6 @@ def test_empty_categories_no_anchors():
     gen = HTMLGenerator()
     html_content = gen.generate(categories)
     
-    assert "cat-999" not in html_content
-    assert "Empty Category" not in html_content
+    assert "cat-999" in html_content
+    assert "Empty Category" in html_content
+

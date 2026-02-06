@@ -3,6 +3,7 @@ from src.api_client import TaskAPIClient
 from src.llm import NewsletterGenerator
 import os
 import unittest.mock as mock
+import datetime
 
 @pytest.fixture
 def mock_api_response():
@@ -11,7 +12,7 @@ def mock_api_response():
         "Data": {
             "FollowUpHistoryDetails": [
                 {
-                    "FollowUpDate": "2024-01-28T10:00:00",
+                    "FollowUpDate": (datetime.datetime.now() - datetime.timedelta(days=1)).isoformat(),
                     "TaskFollowUpComments": "Found the critical bug in production.",
                     "Assignee": "Senior Dev"
                 }

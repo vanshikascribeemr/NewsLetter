@@ -14,36 +14,43 @@ def mock_category_data():
     return CategoryData(categoryId=1, categoryName="Test Category", tasks=tasks)
 
 def test_newsletter_captures_all_tasks(mock_category_data):
-    """Verify that every task in the model is rendered in the newsletter HTML."""
+    """Verify that the newsletter contains category info with clickable task count.
+    Note: Individual task details are now on the dashboard, not in the email."""
     gen = HTMLGenerator()
     html = gen.generate([mock_category_data])
     
-    # In newsletter, each task should have an ID starting with #TaskId
-    for task in mock_category_data.tasks:
-        # Check if the task ID text exists in the HTML
-        assert f"#{task.taskId}" in html
-        # Check if the subject exists
-        assert task.taskSubject in html
+    # In newsletter, we should have:
+    # 1. Category name
+    assert mock_category_data.categoryName in html, "Category name should be in email"
+    
+    # 2. Task count
+    task_count = len(mock_category_data.tasks)
+    assert f"{task_count} tasks" in html, "Task count should be in email"
+    
+    # 3. Dashboard link for the category
+    dashboard_url = f"#cat-{mock_category_data.categoryId}"
+    assert dashboard_url in html, "Dashboard link should be in email"
 
-def test_dashboard_captures_all_tasks(mock_category_data):
+@pytest.mark.asyncio
+async def test_dashboard_captures_all_tasks(mock_category_data):
     """Verify that every task in the model is rendered in the dashboard HTML."""
     gen = DashboardGenerator()
-    html = gen.generate([mock_category_data])
+    html = await gen.generate([mock_category_data])
     soup = BeautifulSoup(html, 'html.parser')
     
     # Find the category section
     cat_section = soup.find(id=f"cat-{mock_category_data.categoryId}")
     assert cat_section is not None
     
-    # Each task is in a div with class 'task-card'
-    task_cards = cat_section.find_all(class_='task-card')
-    assert len(task_cards) == len(mock_category_data.tasks)
+    # Each task is in a div with class 'article-block'
+    task_blocks = cat_section.find_all(class_='article-block')
+    assert len(task_blocks) == len(mock_category_data.tasks)
     
-    # Verify IDs and subjects within the cards
-    card_texts = [card.get_text() for card in task_cards]
+    # Verify IDs and subjects within the blocks
+    block_texts = [block.get_text() for block in task_blocks]
     for task in mock_category_data.tasks:
-        found = any(f"#{task.taskId}" in text and task.taskSubject in text for text in card_texts)
-        assert found, f"Task {task.taskId} not found in its category cards"
+        found = any(f"#{task.taskId}" in text and task.taskSubject in text for text in block_texts)
+        assert found, f"Task {task.taskId} not found in its category blocks"
 
 if __name__ == "__main__":
     # If run directly, just execute these logic checks

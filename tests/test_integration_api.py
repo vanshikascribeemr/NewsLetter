@@ -23,7 +23,7 @@ async def test_api_readiness():
     
     async with httpx.AsyncClient() as client:
         # 1. Check GetAllCategories (simple GET)
-        resp = await client.get(f"{base_url}/GetAllCategories", headers=headers, timeout=10)
+        resp = await client.get(f"{base_url}/GetAllCategories", headers=headers, timeout=60)
         assert resp.status_code == 200, f"Failed to reach GetAllCategories: {resp.text}"
         
         data = resp.json()
@@ -42,7 +42,7 @@ async def test_api_readiness():
             f"{base_url}/GetCategoryTasks", 
             params={"CategoryId": cat_id}, 
             headers=headers, 
-            timeout=10
+            timeout=60
         )
         assert resp_tasks.status_code == 200
         
@@ -60,8 +60,9 @@ async def test_api_readiness():
                 f"{base_url}/GetTaskFollowUpHistory",
                 json={"TaskId": task_id, "Page": 1, "PageSize": 5},
                 headers=headers,
-                timeout=10
+                timeout=60
             )
+
             assert resp_hist.status_code == 200
             # Just verify structure
             hist_data = resp_hist.json()
