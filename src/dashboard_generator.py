@@ -11,7 +11,7 @@ class DashboardGenerator:
     Features a clean headline, a stylized promo banner, and alternating article blocks.
     """
     
-    async def generate(self, categories: List[CategoryData], subscribed_ids: List[int] = None, subscribed_names: List[str] = None) -> str:
+    async def generate(self, categories: List[CategoryData], subscribed_ids: List[int] = None, subscribed_names: List[str] = None, is_warming: bool = False) -> str:
         timestamp = datetime.datetime.now().strftime("%B %d, %Y")
         subscribed_ids = subscribed_ids or []
         subscribed_names = subscribed_names or []
@@ -413,6 +413,9 @@ class DashboardGenerator:
             margin-top: auto;
         }}
 
+        @keyframes spin {{ to {{ transform: rotate(360deg); }} }}
+        .spin {{ animation: spin 1s linear infinite; }}
+
         @media (max-width: 900px) {{
             .main-content {{ padding: 20px; }}
             .article-block {{ flex-direction: column !important; }}
@@ -439,6 +442,7 @@ class DashboardGenerator:
     </aside>
 
     <main class="main-content" id="main-content">
+        {f'<div style="background: var(--accent-light); color: var(--accent); padding: 12px 20px; border-radius: 8px; margin-bottom: 30px; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 10px;"><div class="spin" style="width:12px; height:12px; border:2px solid var(--accent); border-top-color:transparent; border-radius:50%;"></div> Summary Intelligence Engine: Synthesizing latest task comments in background. Please refresh in 1 minute for full summaries.</div>' if is_warming else ''}
         <div class="newsletter-envelope">
             
             <header class="top-band">
@@ -553,7 +557,7 @@ class DashboardGenerator:
             alt_class = "alt" if i % 2 != 0 else ""
             
             # Clean summary
-            summary = task.summarizedComments or "Was initiated and is currently pending initial technical assessment within this workstream."
+            summary = task.summarizedComments or "Generating recent activity summary..."
             id_pattern = rf'^#?\s*{task.taskId}\s*[:\-–—]?\s*'
             summary = re.sub(id_pattern, '', summary, flags=re.IGNORECASE)
             

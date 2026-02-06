@@ -141,30 +141,24 @@ async def get_dashboard(token: str = None, db: Session = Depends(get_db)):
             if user:
                 subscribed_ids = [c.id for c in user.subscriptions]
     
-    # 2. Prefer enriched cache (with 7-day comment summaries)
-    categories = get_enriched_categories()
-    
-    if categories is not None:
-        # Enriched cache hit - serve immediately with full summaries
-        logger.info("Dashboard: Serving from ENRICHED cache (with summaries)", count=len(categories))
+    # 2. Prefer Enriched Cache (summaries ready)
+    enriched = get_enriched_categories()
+    if enriched is not None:
+        categories = enriched
+        logger.info("Dashboard: Serving from enriched cache", count=len(categories))
     else:
         # Fall back to basic cache (without summaries)
         categories = get_cached_categories()
         if categories is not None:
-            logger.info("Dashboard: Serving from basic cache (summaries pending)", count=len(categories))
+            logger.info("Dashboard: Serving from basic cache (enrichment in progress)", count=len(categories))
         else:
-            # Cache miss - need to fetch (slow path, first load only)
-            logger.info("Dashboard: Cache miss, fetching from API...")
+            # Full cache miss
+            logger.info("Dashboard: Full cache miss, fetching fresh data...")
             client = TaskAPIClient()
             categories = await client.get_all_categories_with_tasks()
-            
-            # Sync to DB during slow path
-            sync_db = SessionLocal()
-            try:
-                sync_categories(sync_db, [c.model_dump(by_alias=True) for c in categories])
-                logger.info("Categories synced to database during slow-path fetch", count=len(categories))
-            finally:
-                sync_db.close()
+    
+    # Render with "Generating" status if needed
+    is_warming = enriched is None
     
     # 3. Generate personalized dashboard
     dash_gen = DashboardGenerator()
@@ -206,7 +200,8 @@ async def get_dashboard(token: str = None, db: Session = Depends(get_db)):
     html_content = await dash_gen.generate(
         categories_to_render, 
         subscribed_ids=subscribed_ids, 
-        subscribed_names=subscribed_names
+        subscribed_names=subscribed_names,
+        is_warming=is_warming
     )
     return HTMLResponse(content=html_content)
 
